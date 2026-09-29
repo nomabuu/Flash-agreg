@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flash’Agreg</title>
+<meta name="description" content="Flash’Agreg — cartes de révision, hors connexion, sur PC et téléphone.">
+<meta name="theme-color" content="#0c1b35">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Flash’Agreg">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <button id="back" class="icon-btn" hidden aria-label="Retour"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+    <h1 id="title"></h1>
+    <div id="actions" class="topbar-actions"></div>
+    <button id="account" class="icon-btn account-btn" aria-label="Compte" data-status="none"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20.5c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></svg><span class="sync-dot"></span></button>
+  </div>
+</header>
+<main id="app"></main>
+<dialog id="modal"></dialog>
+<div id="lightbox" hidden><img alt=""></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="cloud.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
