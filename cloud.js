@@ -173,7 +173,13 @@ function mergeDeck(local, row) {
     if (!rc) { if (local?.dirty || !local?.remoteAt) cards.set(c.id, c); continue; }
     cards.set(c.id, { ...(stampOf(c) > stampOf(rc) ? c : rc), ...progressFields(c) });
   }
-  out.cards = [...cards.values()].filter(c => !(tomb[c.id] >= stampOf(c)));
+  // Ordre des cartes : celui de la version modifiée le plus récemment (réordonnancement par glisser-déposer)
+  const localFirst = local?.dirty && (local.editedAt || 0) > (r.editedAt || 0);
+  const firstOrder = localFirst ? base.cards.map(c => c.id) : (r.cards || []).map(c => c.id);
+  const rank = new Map(firstOrder.map((id, i) => [id, i]));
+  out.cards = [...cards.values()]
+    .filter(c => !(tomb[c.id] >= stampOf(c)))
+    .sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
   out.deletedCards = tomb;
   gcImages(out);
   return out;

@@ -72,6 +72,11 @@ const ICON = {
   book: svg('<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5"/>'),
   image: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 9"/>'),
   chevron: svg('<path d="M9 5l7 7-7 7"/>'),
+  grip: svg('<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>'),
+  check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+  copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'),
+  cut: svg('<circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M8.5 15.5L19 4M15.5 15.5L5 4"/>'),
+  paste: svg('<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 11h6M9 15h4"/>'),
   users: svg('<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 5.2a3 3 0 0 1 0 5.6M18 14.8c1.8.6 3 2.4 3 5.2"/>'),
   user: svg('<circle cx="12" cy="8" r="3.6"/><path d="M4.5 20.5c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/>'),
   spark: svg('<path d="M4 20L14 10"/><path d="M16 3l1 2.5L19.5 6.5 17 7.5 16 10l-1-2.5L12.5 6.5 15 5.5z"/>'),
@@ -533,8 +538,13 @@ async function renderDeck(id) {
       <label class="switch"><input type="checkbox" data-setting="shuffle" ${settings.shuffle ? 'checked' : ''}><span>Ordre aléatoire en mode Parcourir</span></label>
     </div>
     <h3 class="section">Cartes</h3>
-    <div class="row">${state.canEdit ? `<button class="btn" data-act="new-card">${ICON.plus} Carte</button>` : ''}<input type="search" id="search" placeholder="Rechercher une carte…" aria-label="Rechercher une carte"></div>
+    <div class="row">
+      ${state.canEdit ? `<button class="btn" data-act="new-card">${ICON.plus} Carte</button>` : ''}
+      <input type="search" id="search" placeholder="Rechercher une carte…" aria-label="Rechercher une carte">
+    </div>
+    <div id="card-tools"></div>
     <ul class="card-list" id="cards"></ul>`;
+  state.selection = null;
   renderCardList();
   $('#search').oninput = renderCardList;
   app.querySelectorAll('[data-setting]').forEach(el => {
@@ -546,13 +556,191 @@ function renderCardList() {
   const deck = state.deck;
   const q = ($('#search')?.value || '').toLowerCase().trim();
   const list = deck.cards.filter(c => !q || c.front.toLowerCase().includes(q) || c.back.toLowerCase().includes(q));
+  const sel = state.selection;
+  // L'ordre ne se modifie que sur la liste complète (pas pendant une recherche ni une sélection)
+  const draggable = state.canEdit && !q && !sel && deck.cards.length > 1;
   $('#cards').innerHTML = list.length
-    ? list.map(c => `<li><button class="card-item" data-act="edit-card" data-id="${c.id}">
-        <span class="txt"><span class="front">${esc(plain(c.front))}</span>
-        <span class="back">${esc(plain(c.back)) || '<i>(pas de définition)</i>'}</span></span>
-        ${/!\[/.test(c.back) ? `<span class="has-img" title="Contient une image">${ICON.image}</span>` : ''}
-      </button></li>`).join('')
-    : `<li class="muted">${deck.cards.length ? 'Aucun résultat.' : 'Aucune carte. Ajoute-en une ou importe un fichier.'}</li>`;
+    ? list.map(c => `<li data-id="${c.id}" class="${sel?.has(c.id) ? 'selected' : ''}">
+        ${draggable ? `<button class="drag-handle" aria-label="Déplacer la carte (glisser, ou flèches haut / bas)" title="Glisser pour déplacer">${ICON.grip}</button>` : ''}
+        <button class="card-item" data-act="${sel ? 'toggle-card' : 'edit-card'}" data-id="${c.id}">
+          ${sel ? `<span class="tick" aria-hidden="true">${sel.has(c.id) ? ICON.check : ''}</span>` : ''}
+          <span class="txt"><span class="front">${esc(plain(c.front))}</span>
+          <span class="back">${esc(plain(c.back)) || '<i>(pas de définition)</i>'}</span></span>
+          ${/!\[/.test(c.back) ? `<span class="has-img" title="Contient une image">${ICON.image}</span>` : ''}
+        </button></li>`).join('')
+    : `<li class="muted">${deck.cards.length ? 'Aucun résultat.' : 'Aucune carte. Ajoute-en une, colle des cartes copiées ou importe un fichier.'}</li>`;
+  renderCardTools();
+  if (draggable) enableCardDrag($('#cards'));
+}
+
+/* ---------- Copier / couper / coller des cartes entre paquets ----------
+   Presse-papiers propre à l'appli (localStorage) : il survit au changement de paquet
+   et au rechargement, pour coller dans n'importe quel autre paquet. */
+const cardClipboard = {
+  get() { try { return JSON.parse(localStorage.getItem('fa-clipboard')); } catch { return null; } },
+  set(v) {
+    try { v ? localStorage.setItem('fa-clipboard', JSON.stringify(v)) : localStorage.removeItem('fa-clipboard'); }
+    catch { toast('Presse-papiers trop volumineux (images) : copie impossible'); return false; }
+    return true;
+  },
+};
+
+function renderCardTools() {
+  const box = $('#card-tools');
+  if (!box) return;
+  const sel = state.selection;
+  const clip = cardClipboard.get();
+  if (sel) {
+    box.innerHTML = `<div class="select-bar">
+      <span class="select-count">${sel.size ? plural(sel.size, 'carte') + ' sélectionnée' + (sel.size > 1 ? 's' : '') : 'Touche les cartes à sélectionner'}</span>
+      <span class="spacer"></span>
+      <button class="btn ghost" data-act="select-all">Tout</button>
+      <button class="btn" data-act="copy-cards" ${sel.size ? '' : 'disabled'}>${ICON.copy} Copier</button>
+      ${state.canEdit ? `<button class="btn" data-act="cut-cards" ${sel.size ? '' : 'disabled'}>${ICON.cut} Couper</button>` : ''}
+      <button class="btn ghost" data-act="select-cancel">Annuler</button>
+    </div>`;
+    return;
+  }
+  const canPaste = clip?.cards?.length && state.canEdit;
+  box.innerHTML = state.deck.cards.length || canPaste ? `<div class="row card-tools">
+    ${state.deck.cards.length ? `<button class="btn ghost" data-act="select-start">${ICON.check} Sélectionner</button>` : ''}
+    ${canPaste ? `<span class="paste-group"><button class="btn" data-act="paste-cards">${ICON.paste} Coller ${plural(clip.cards.length, 'carte')}${clip.cut ? ' (déplacer)' : ''}</button><button class="icon-btn small" data-act="clear-clipboard" aria-label="Vider le presse-papiers" title="Vider le presse-papiers">×</button></span>` : ''}
+    ${state.canEdit && state.deck.cards.length > 1 ? `<span class="hint drag-hint">Glisse ${ICON.grip} pour réordonner</span>` : ''}
+  </div>` : '';
+}
+
+// Place des cartes dans le presse-papiers (avec les images qu'elles utilisent)
+function copyToClipboard(ids, cut = false) {
+  const deck = state.deck;
+  const cards = deck.cards.filter(c => ids.includes(c.id));
+  const images = {};
+  for (const c of cards) {
+    for (const m of `${c.front}\n${c.back}`.matchAll(/!\[[^\]]*\]\(([^)\s]+)\)/g)) {
+      const key = m[1].replace(/^img:/, '');
+      if (deck.images?.[key]) images[key] = deck.images[key];
+    }
+  }
+  const ok = cardClipboard.set({
+    cards: cards.map(({ front, back }) => ({ front, back })), images,
+    cut, from: deck.id, fromName: deck.name, ids: cards.map(c => c.id), at: Date.now(),
+  });
+  if (!ok) return;
+  toast(`${plural(cards.length, 'carte')} ${cut ? 'coupée' : 'copiée'}${cards.length > 1 ? 's' : ''} — ouvre un autre paquet et touche « Coller »`);
+}
+
+async function pasteCards() {
+  const clip = cardClipboard.get();
+  const deck = state.deck;
+  if (!clip?.cards?.length || !state.canEdit) return;
+  if (clip.cut && clip.from === deck.id) return toast('Ces cartes sont déjà dans ce paquet : glisse-les pour les réordonner');
+  // Images : éviter les collisions de noms avec celles du paquet de destination
+  deck.images ||= {};
+  const rename = {};
+  for (const [k, v] of Object.entries(clip.images || {})) {
+    let key = k;
+    if (deck.images[key] && deck.images[key] !== v) { key = `${k}-${uid()}`; rename[k] = key; }
+    deck.images[key] = v;
+  }
+  const now = Date.now();
+  for (const c of clip.cards) {
+    let { front, back } = c;
+    for (const [from, to] of Object.entries(rename)) {
+      const re = new RegExp(`\\]\\((img:)?${from}\\)`, 'g');
+      front = front.replace(re, `](img:${to})`);
+      back = back.replace(re, `](img:${to})`);
+    }
+    deck.cards.push({ id: uid(), front, back, created: now, updated: now });
+  }
+  await putDeck(deck);
+  // Couper = déplacer : on retire les cartes du paquet d'origine
+  if (clip.cut) {
+    const src = await getDeck(clip.from);
+    if (src) {
+      src.cards = src.cards.filter(c => !clip.ids.includes(c.id));
+      src.deletedCards ||= {};
+      for (const id of clip.ids) src.deletedCards[id] = now;
+      gcImages(src);
+      await putDeck(src);
+    }
+    cardClipboard.set(null);
+  }
+  toast(`${plural(clip.cards.length, 'carte')} ${clip.cut ? 'déplacée' : 'collée'}${clip.cards.length > 1 ? 's' : ''} à la fin du paquet`);
+  await renderDeck(deck.id);
+  const last = $('#cards li:last-child');
+  last?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+/* ---------- Réordonner les cartes par glisser-déposer (souris et tactile) ---------- */
+function enableCardDrag(list) {
+  list.querySelectorAll('.drag-handle').forEach(handle => {
+    handle.addEventListener('pointerdown', e => startCardDrag(e, handle, list));
+    handle.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      const li = handle.closest('li');
+      const other = e.key === 'ArrowUp' ? li.previousElementSibling : li.nextElementSibling;
+      if (!other) return;
+      e.key === 'ArrowUp' ? other.before(li) : other.after(li);
+      handle.focus();
+      saveCardOrder(list);
+    });
+  });
+}
+
+function startCardDrag(e, handle, list) {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  e.preventDefault();
+  const li = handle.closest('li');
+  const rect = li.getBoundingClientRect();
+  const offsetY = e.clientY - rect.top;
+  const placeholder = document.createElement('li');
+  placeholder.className = 'drag-placeholder';
+  placeholder.style.height = rect.height + 'px';
+  li.after(placeholder);
+  Object.assign(li.style, { position: 'fixed', left: rect.left + 'px', top: rect.top + 'px', width: rect.width + 'px', zIndex: 30 });
+  li.classList.add('dragging');
+  try { handle.setPointerCapture(e.pointerId); } catch { /* capture indisponible : le suivi reste possible */ }
+  let y = e.clientY, raf = 0;
+
+  const place = () => {
+    li.style.top = (y - offsetY) + 'px';
+    const siblings = [...list.children].filter(x => x !== li && x !== placeholder);
+    const before = siblings.find(x => { const r = x.getBoundingClientRect(); return y < r.top + r.height / 2; });
+    before ? before.before(placeholder) : list.append(placeholder);
+  };
+  // Défilement automatique près des bords de l'écran
+  const tick = () => {
+    const edge = 70;
+    if (y < edge) scrollBy(0, -Math.ceil((edge - y) / 5));
+    else if (y > innerHeight - edge) scrollBy(0, Math.ceil((y - innerHeight + edge) / 5));
+    place();
+    raf = requestAnimationFrame(tick);
+  };
+  const move = ev => { y = ev.clientY; place(); };
+  const end = () => {
+    cancelAnimationFrame(raf);
+    place();
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', end);
+    handle.removeEventListener('pointercancel', end);
+    placeholder.replaceWith(li);
+    li.removeAttribute('style');
+    li.classList.remove('dragging');
+    saveCardOrder(list);
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+  raf = requestAnimationFrame(tick);
+}
+
+async function saveCardOrder(list) {
+  const deck = state.deck;
+  const order = [...list.querySelectorAll('li[data-id]')].map(li => li.dataset.id);
+  if (order.join() === deck.cards.map(c => c.id).join()) return;
+  const pos = new Map(order.map((id, i) => [id, i]));
+  deck.cards.sort((a, b) => (pos.get(a.id) ?? 1e9) - (pos.get(b.id) ?? 1e9));
+  await putDeck(deck);
 }
 
 /* ---------- Révision ----------
@@ -759,7 +947,7 @@ function openEditor(cardId) {
   if (!state.canEdit) { // paquet partagé en lecture seule : simple aperçu
     if (!card) return;
     openModal(`<div class="card-view"><div class="face-q md">${md(card.front, deck)}</div><div class="md">${md(card.back, deck)}</div></div>
-      <div class="row end"><button class="btn ghost" data-act="close">Fermer</button></div>`);
+      <div class="row end"><button class="btn" data-act="copy-one" data-id="${card.id}">${ICON.copy} Copier la carte</button><button class="btn ghost" data-act="close">Fermer</button></div>`);
     return;
   }
   const m = openModal(`
@@ -778,7 +966,8 @@ function openEditor(cardId) {
     <details id="prev-wrap" open><summary>Aperçu</summary><div class="preview md" id="preview"></div></details>
     <input type="file" accept="image/*" multiple hidden id="img-input">
     <div class="row end">
-      ${card ? '<button type="button" class="btn danger" data-ed="delete">Supprimer</button>' : ''}
+      ${card ? `<button type="button" class="btn danger" data-ed="delete">Supprimer</button>
+      <button type="button" class="btn ghost" data-act="copy-one" data-id="${card.id}">${ICON.copy} Copier</button>` : ''}
       <span class="spacer"></span>
       <button type="button" class="btn ghost" data-ed="cancel">Annuler</button>
       ${card ? '' : '<button type="button" class="btn" data-ed="save-new">Enregistrer + suivante</button>'}
@@ -1088,6 +1277,25 @@ const actions = {
   },
   'new-card': () => openEditor(),
   'edit-card': el => openEditor(el.dataset.id),
+  'select-start': () => { state.selection = new Set(); renderCardList(); },
+  'select-cancel': () => { state.selection = null; renderCardList(); },
+  'select-all': () => {
+    const q = ($('#search')?.value || '').toLowerCase().trim();
+    const visible = state.deck.cards.filter(c => !q || c.front.toLowerCase().includes(q) || c.back.toLowerCase().includes(q));
+    const all = visible.every(c => state.selection.has(c.id));
+    visible.forEach(c => (all ? state.selection.delete(c.id) : state.selection.add(c.id)));
+    renderCardList();
+  },
+  'toggle-card': el => {
+    const s = state.selection;
+    s.has(el.dataset.id) ? s.delete(el.dataset.id) : s.add(el.dataset.id);
+    renderCardList();
+  },
+  'copy-cards': () => { copyToClipboard([...state.selection]); state.selection = null; renderCardList(); },
+  'cut-cards': () => { copyToClipboard([...state.selection], true); state.selection = null; renderCardList(); },
+  'paste-cards': () => pasteCards(),
+  'clear-clipboard': () => { cardClipboard.set(null); renderCardTools(); toast('Presse-papiers vidé'); },
+  'copy-one': el => { copyToClipboard([el.dataset.id]); closeModal(); renderCardTools(); },
   'deck-menu': openDeckMenu,
   'export-deck': () => { closeModal(); exportDeck(state.deck); },
   async 'rename-deck'() {
