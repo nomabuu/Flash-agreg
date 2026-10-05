@@ -62,6 +62,8 @@ const state = { deck: null, session: null, folderId: null };
 // Icônes (traits simples, couleur héritée du texte)
 const svg = (d, extra = '') => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
 const ICON = {
+  search: svg('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>'),
+  edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
   folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
   deck: svg('<rect x="3" y="6" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/>'),
   back: svg('<path d="M15 5l-7 7 7 7"/>'),
@@ -467,7 +469,7 @@ async function renderHome() {
   const ids = new Set(folders.map(f => f.id));
   const loose = decks.filter(d => !d.folderId || !ids.has(d.folderId)).sort(byName);
   setHeader(APP_NAME, null,
-    `<button class="icon-btn" data-act="import" aria-label="Importer" title="Importer">${ICON.import}</button><button class="icon-btn" data-act="menu" aria-label="Menu" title="Menu">${ICON.more}</button>`,
+    `<button class="icon-btn" data-act="search" aria-label="Rechercher dans toutes les cartes" title="Rechercher">${ICON.search}</button><button class="icon-btn" data-act="import" aria-label="Importer" title="Importer">${ICON.import}</button><button class="icon-btn" data-act="menu" aria-label="Menu" title="Menu">${ICON.more}</button>`,
     { brand: true });
   const now = Date.now();
   const totalDue = decks.reduce((n, d) => n + dueCount(d, now), 0);
@@ -489,6 +491,7 @@ async function renderHome() {
       <div><span class="hero-num">${totalDue}</span><span class="hero-label">carte${totalDue > 1 ? 's' : ''} à réviser aujourd’hui</span></div>
       <div class="hero-sub">${plural(folders.length, 'dossier')} · ${plural(decks.length, 'paquet')}</div>
     </section>
+    <button class="search-launch" data-act="search">${ICON.search}<span>Rechercher un auteur, une notion… dans toutes les cartes</span></button>
     <div class="row">
       <button class="btn primary" data-act="new-folder">${ICON.folder} Nouveau dossier</button>
       <button class="btn" data-act="new-deck">${ICON.plus} Nouveau paquet</button>
@@ -497,6 +500,113 @@ async function renderHome() {
     </div>
     ${folders.length ? `<h3 class="section">Dossiers</h3><ul class="list">${folders.sort(byName).map(f => folderRow(f, decks, now)).join('')}</ul>` : ''}
     ${loose.length ? `<h3 class="section">${folders.length ? 'Paquets hors dossier' : 'Paquets'}</h3><ul class="list">${loose.map(d => deckRow(d, now)).join('')}</ul>` : ''}`;
+}
+
+/* ---------- Recherche dans toutes les cartes ----------
+   Insensible aux accents et à la casse ; plusieurs mots = tous doivent être présents
+   (ex. « porter forces »). Le recto compte plus que le verso dans le classement. */
+const normalizeChar = ch => ch.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+function normIndex(text) {
+  let norm = '';
+  const map = [];
+  for (let i = 0; i < text.length; i++) {
+    const n = normalizeChar(text[i]);
+    for (let k = 0; k < n.length; k++) { norm += n[k]; map.push(i); }
+  }
+  return { norm, map };
+}
+// Texte échappé avec les mots trouvés surlignés ; maxLen > 0 : extrait autour du premier mot trouvé
+function highlight(text, terms, maxLen = 0) {
+  const { norm, map } = normIndex(text);
+  const ranges = [];
+  for (const t of terms) {
+    let i = norm.indexOf(t);
+    while (i >= 0) { ranges.push([map[i], map[i + t.length - 1] + 1]); i = norm.indexOf(t, i + t.length); }
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  let from = 0, to = text.length;
+  if (maxLen && text.length > maxLen) {
+    const first = ranges[0]?.[0] ?? 0;
+    from = Math.max(0, first - Math.floor(maxLen / 3));
+    to = Math.min(text.length, from + maxLen);
+  }
+  let html = from > 0 ? '…' : '', pos = from;
+  for (const [a, b] of ranges) {
+    if (b <= pos || a >= to) continue;
+    html += esc(text.slice(pos, Math.max(a, pos))) + '<mark>' + esc(text.slice(Math.max(a, pos), Math.min(b, to))) + '</mark>';
+    pos = Math.min(b, to);
+  }
+  return html + esc(text.slice(pos, to)) + (to < text.length ? '…' : '');
+}
+const searchText = s => s.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/^\s*(#+|[-*•]|\d+[.)])\s+/gm, '').replace(/\*\*|\*|`/g, '').replace(/\s+/g, ' ').trim();
+
+async function renderSearch() {
+  state.deck = null;
+  state.folderId = null;
+  setHeader('Rechercher', '#/', '', { crumb: 'Toutes les cartes' });
+  app.innerHTML = `
+    <div class="search-box">${ICON.search}<input type="search" id="gsearch" placeholder="Auteur, notion, mot-clé… (ex. Porter, Weick, VRIO)" aria-label="Rechercher dans toutes les cartes" autocomplete="off" value="${esc(state.searchQuery || '')}"></div>
+    <p class="hint" id="gsearch-info"></p>
+    <ul class="card-list" id="gresults"></ul>`;
+  const [decks, folders] = await Promise.all([getAll(), getFolders()]);
+  const folderName = new Map(folders.map(f => [f.id, f.name]));
+  // Index préparé une fois : texte à plat et normalisé de chaque carte
+  const index = [];
+  for (const d of decks) for (const c of d.cards) {
+    const front = searchText(c.front), back = searchText(c.back);
+    index.push({ deck: d, card: c, front, back, nf: normIndex(front).norm, nb: normIndex(back).norm });
+  }
+  const input = $('#gsearch'), info = $('#gsearch-info'), list = $('#gresults');
+  const run = () => {
+    state.searchQuery = input.value;
+    const terms = [...new Set(normIndex(input.value).norm.split(/\s+/).filter(t => t.length >= 2))];
+    if (!terms.length) {
+      info.textContent = `Recherche dans ${plural(index.length, 'carte')} de ${plural(decks.length, 'paquet')}. Tape au moins 2 lettres.`;
+      list.innerHTML = '';
+      return;
+    }
+    const hits = index
+      .filter(x => terms.every(t => x.nf.includes(t) || x.nb.includes(t)))
+      .map(x => ({ ...x, score: terms.reduce((s, t) => s + (x.nf.includes(t) ? 10 : 0) + (x.nb.includes(t) ? 1 : 0), 0) }))
+      .sort((a, b) => b.score - a.score || a.deck.name.localeCompare(b.deck.name, 'fr'));
+    info.textContent = hits.length
+      ? `${hits.length} carte${hits.length > 1 ? 's' : ''} trouvée${hits.length > 1 ? 's' : ''}${hits.length > 100 ? ' (100 premières affichées)' : ''}`
+      : 'Aucune carte trouvée.';
+    list.innerHTML = hits.slice(0, 100).map(h => `<li><button class="card-item result" data-act="open-result" data-deck="${h.deck.id}" data-id="${h.card.id}">
+        <span class="txt">
+          <span class="front">${highlight(h.front, terms)}</span>
+          <span class="back snippet">${highlight(h.back, terms, 140) || '<i>(pas de définition)</i>'}</span>
+          <span class="where">${ICON.deck}${h.deck.folderId && folderName.has(h.deck.folderId) ? esc(folderName.get(h.deck.folderId)) + ' › ' : ''}${esc(h.deck.name)}</span>
+        </span>
+      </button></li>`).join('');
+  };
+  let timer;
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 120); });
+  run();
+  input.focus();
+}
+
+// Ouvre une carte trouvée : aperçu, avec accès au paquet et à la modification
+async function openSearchResult(deckId, cardId) {
+  const deck = await getDeck(deckId);
+  const card = deck?.cards.find(c => c.id === cardId);
+  if (!card) return toast('Carte introuvable');
+  const folder = deck.folderId ? await getFolder(deck.folderId) : null;
+  const editable = canEditDeck(deck, folder);
+  const m = openModal(`
+    <p class="hint where">${ICON.deck}${folder ? esc(folder.name) + ' › ' : ''}${esc(deck.name)}</p>
+    <div class="card-view"><div class="face-q md">${md(card.front, deck)}</div><div class="md">${md(card.back, deck)}</div></div>
+    <div class="row end">
+      <button class="btn ghost" data-act="close">Fermer</button>
+      <button class="btn" id="go-deck">Ouvrir le paquet</button>
+      ${editable ? `<button class="btn primary" id="edit-found">${ICON.edit} Modifier</button>` : ''}
+    </div>`);
+  $('#go-deck', m).onclick = () => { closeModal(); go(`#/deck/${deckId}`); };
+  $('#edit-found', m)?.addEventListener('click', () => {
+    state.deck = deck;
+    state.canEdit = true;
+    openEditor(cardId, { onDone: () => renderSearch() });
+  });
 }
 
 async function renderFolder(id) {
@@ -510,7 +620,7 @@ async function renderFolder(id) {
   const writable = folderCanWrite(folder);
   const isOwner = !folder.role || folder.role === 'owner';
   setHeader(folder.name, '#/',
-    `${isOwner ? `<button class="icon-btn" data-act="share-folder" aria-label="Partager" title="Partager">${ICON.users}</button>` : ''}<button class="icon-btn" data-act="folder-menu" aria-label="Options du dossier" title="Options">${ICON.more}</button>`,
+    `<button class="icon-btn" data-act="search" aria-label="Rechercher dans toutes les cartes" title="Rechercher">${ICON.search}</button>${isOwner ? `<button class="icon-btn" data-act="share-folder" aria-label="Partager" title="Partager">${ICON.users}</button>` : ''}<button class="icon-btn" data-act="folder-menu" aria-label="Options du dossier" title="Options">${ICON.more}</button>`,
     { crumb: isOwner ? 'Dossier' : 'Dossier partagé' });
   app.innerHTML = `
     ${sharedLabel(folder) ? `<p class="notice">${ICON.users}<span>Dossier ${sharedLabel(folder)}.</span></p>` : ''}
@@ -540,7 +650,7 @@ async function renderDeck(id) {
   const due = dueCount(deck, now);
   const fresh = deck.cards.filter(c => !c.reps).length;
   setHeader(deck.name, folder ? `#/folder/${folder.id}` : '#/',
-    `<button class="icon-btn" data-act="deck-menu" aria-label="Options du paquet" title="Options">${ICON.more}</button>`,
+    `<button class="icon-btn" data-act="search" aria-label="Rechercher dans toutes les cartes" title="Rechercher">${ICON.search}</button><button class="icon-btn" data-act="deck-menu" aria-label="Options du paquet" title="Options">${ICON.more}</button>`,
     { crumb: folder ? folder.name : 'Paquet' });
   const off = deck.cards.length ? '' : 'disabled';
   app.innerHTML = `
@@ -794,8 +904,34 @@ async function startStudy(id, mode) {
     const pool = deck.cards.filter(c => isDue(c, now));
     state.session = { ...base, queue: shuffle(pool.map(c => c.id)), total: pool.length, done: 0, again: 0 };
   }
+  const folder = deck.folderId ? await getFolder(deck.folderId) : null;
+  state.canEdit = canEditDeck(deck, folder);
   setHeader(deck.name, `#/deck/${id}`);
   renderStudy();
+}
+
+// Modifier la carte affichée sans quitter la révision
+function editCurrentCard() {
+  const s = state.session;
+  const card = s && currentCard(s);
+  if (!card || !state.canEdit) return;
+  openEditor(card.id, {
+    onDone: action => {
+      if (action === 'deleted') {
+        if (s.mode === 'browse') {
+          s.order.splice(s.index, 1);
+          s.index = Math.min(s.index, s.order.length - 1);
+          if (!s.order.length) s.finished = true;
+        } else {
+          s.queue.shift();
+          s.total = Math.max(0, s.total - 1);
+        }
+        s.flipped = false;
+        s.typed = '';
+      }
+      renderStudy();
+    },
+  });
 }
 
 // Mots-clés d'une réponse (sans accents, sans mots courants) pour comparer avec la réponse tapée
@@ -871,11 +1007,12 @@ function renderStudy(anim = '') {
     <div class="progress"><div style="width:${pct}%"></div></div>
     <p class="muted center study-info">${pos} / ${total} · ${s.mode === 'browse' ? 'Parcourir · sans notation' : 'Révision espacée'}</p>
     <div class="flashcard ${s.flipped ? 'is-back' : 'is-front'} ${anim}" id="fc" tabindex="0" data-act="flip" role="button" aria-label="Retourner la carte">
+      ${state.canEdit ? `<button class="card-edit" data-act="edit-current" aria-label="Modifier cette carte (touche E)" title="Modifier (E)">${ICON.edit}</button>` : ''}
       ${face}
       <p class="flip-hint">${s.flipped ? 'Touchez pour revoir la question' : s.typing ? 'Réponds ci-dessous, ou touchez pour retourner' : 'Touchez pour retourner'}</p>
     </div>
     ${typedBox}${answerInput}${controls}
-    ${s.mode === 'browse' ? '<p class="hint center keys-hint">Clavier : ← → pour naviguer · Espace pour retourner</p>' : ''}`;
+    ${s.mode === 'browse' ? `<p class="hint center keys-hint">Clavier : ← → pour naviguer · Espace pour retourner${state.canEdit ? ' · E pour modifier' : ''}</p>` : ''}`;
 
   const input = $('#answer');
   if (input) {
@@ -975,7 +1112,8 @@ function openModal(html) {
 function closeModal() { if (modal.open) modal.close(); }
 modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
 
-function openEditor(cardId) {
+// onDone(action) : écran à réafficher après enregistrement ou suppression (par défaut : le paquet)
+function openEditor(cardId, { onDone } = {}) {
   const deck = state.deck;
   const card = cardId ? deck.cards.find(c => c.id === cardId) : null;
   if (!state.canEdit) { // paquet partagé en lecture seule : simple aperçu
@@ -1060,6 +1198,7 @@ function openEditor(cardId) {
     gcImages(deck);
     await putDeck(deck);
     toast('Carte enregistrée');
+    if (onDone) { closeModal(); return onDone('saved'); }
     await renderDeck(deck.id);
     if (again) openEditor(); else closeModal();
   };
@@ -1074,8 +1213,9 @@ function openEditor(cardId) {
       gcImages(deck);
       await putDeck(deck);
       closeModal();
-      renderDeck(deck.id);
       toast('Carte supprimée');
+      if (onDone) return onDone('deleted');
+      renderDeck(deck.id);
     }
   });
   m.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(false); });
@@ -1311,6 +1451,9 @@ const actions = {
       ],
     }));
   },
+  'edit-current': () => editCurrentCard(),
+  search: () => go('#/search'),
+  'open-result': el => openSearchResult(el.dataset.deck, el.dataset.id),
   'new-card': () => openEditor(),
   'edit-card': el => openEditor(el.dataset.id),
   'select-start': () => { state.selection = new Set(); renderCardList(); },
@@ -1422,6 +1565,7 @@ document.addEventListener('keydown', e => {
     if (/^(BUTTON|A)$/.test(e.target.tagName)) return; // le bouton focalisé gère déjà la touche
     e.preventDefault(); flip();
   }
+  else if (e.key === 'e' || e.key === 'E') { e.preventDefault(); editCurrentCard(); }
   else if (s.mode === 'browse' && e.key === 'ArrowRight') { e.preventDefault(); move(1); }
   else if (s.mode === 'browse' && e.key === 'ArrowLeft') { e.preventDefault(); move(-1); }
   else if (s.mode === 'due' && s.flipped && /^[1-4]$/.test(e.key)) rate(+e.key - 1);
@@ -1437,6 +1581,7 @@ async function route() {
   try {
     if (view === 'deck' && id) { state.session = null; return await renderDeck(id); }
     if (view === 'folder' && id) { state.session = null; return await renderFolder(id); }
+    if (view === 'search') { state.session = null; return await renderSearch(); }
     if (view === 'study' && id) return await startStudy(id, mode === 'browse' || mode === 'all' ? 'browse' : 'due');
     state.session = null;
     await renderHome();

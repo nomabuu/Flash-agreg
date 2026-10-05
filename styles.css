@@ -299,6 +299,35 @@ h3.section::after { content: ""; flex: 1; height: 1px; background: var(--border)
 .flashcard.is-front .face { text-align: center; font: 600 1.7rem/1.3 var(--serif); }
 .flashcard.is-back { border-top-color: var(--gold); }
 .flashcard .face-q { color: var(--accent); font: 600 1rem/1.3 var(--serif); padding-bottom: 10px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
+/* Bouton « modifier » en haut à gauche de la carte en révision */
+.card-edit {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+  display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+  color: var(--muted); cursor: pointer; opacity: .75; transition: opacity .15s, color .15s, border-color .15s;
+}
+.card-edit:hover, .card-edit:focus-visible { opacity: 1; color: var(--accent); border-color: var(--accent); }
+.card-edit .ico { width: 17px; height: 17px; }
+.flashcard:has(.card-edit) { padding-top: 50px; }
+
+/* Recherche globale */
+.search-launch {
+  display: flex; align-items: center; gap: 10px; width: 100%; margin: 14px 0 4px; padding: 11px 14px;
+  font: inherit; font-size: .95rem; color: var(--muted); text-align: left; cursor: text;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.search-launch:hover { border-color: var(--accent); }
+.search-box {
+  display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  background: var(--surface); border: 1.5px solid var(--accent); border-radius: var(--radius);
+}
+.search-box .ico { color: var(--accent); }
+.search-box input { flex: 1; border: 0; background: transparent; padding: 13px 0; font-size: 1.05rem; outline: none; min-width: 0; }
+.card-item.result .snippet { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.where { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; font-size: .78rem; color: var(--gold); font-weight: 600; }
+.where .ico { width: 13px; height: 13px; }
+mark { background: color-mix(in srgb, var(--gold) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+
 .flip-hint { position: absolute; bottom: 10px; left: 0; right: 0; margin: 0; text-align: center; color: var(--muted); font-size: .76rem; letter-spacing: .03em; }
 .flip-out { animation: flipOut .14s ease-in forwards; }
 .flip-in { animation: flipIn .18s ease-out; }
