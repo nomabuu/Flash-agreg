@@ -1,6 +1,6 @@
 // Service worker : rend l'appli utilisable hors connexion.
 // Après une modification des fichiers de l'appli, incrémente VERSION.
-const VERSION = 'v6';
+const VERSION = 'v7';
 const CORE = `core-${VERSION}`;
 const IMAGES = 'images-v1';
 const ASSETS = [

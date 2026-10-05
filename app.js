@@ -102,8 +102,9 @@ function shuffle(a) {
 function slug(s) {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'paquet';
 }
-function download(filename, obj) {
-  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+function download(filename, obj, type = 'application/json') {
+  const content = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+  const blob = new Blob([content], { type });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -345,6 +346,39 @@ async function importText(text, intoId, folderId = state.folderId) {
   }
   toast(`${plural(total, 'carte')} importée${total > 1 ? 's' : ''}`);
   go(data.decks.length === 1 || intoId ? `#/deck/${lastId}` : folderId ? `#/folder/${folderId}` : '#/');
+}
+
+/* ---------- Export Anki ----------
+   Fichier texte importable dans Anki (Fichier → Importer), au format des en-têtes Anki 2.1.55+ :
+   une note « Basique » par carte, champs en HTML (mise en forme et images intégrées),
+   paquet indiqué en 3ᵉ colonne (« Dossier::Paquet » → sous-paquet dans Anki). */
+function ankiField(html) {
+  return '"' + html.replace(/[\t\r\n]+/g, ' ').replace(/"/g, '""') + '"';
+}
+function ankiExport(decks, folderName) {
+  const clean = s => s.replace(/::/g, ':').trim();
+  const lines = ['#separator:tab', '#html:true', '#columns:Recto\tVerso\tPaquet', '#deck column:3'];
+  let n = 0;
+  for (const deck of decks) {
+    const ankiDeck = folderName ? `${clean(folderName)}::${clean(deck.name)}` : clean(deck.name);
+    for (const c of deck.cards) {
+      lines.push([ankiField(md(c.front, deck)), ankiField(md(c.back, deck)), ankiField(ankiDeck)].join('\t'));
+      n++;
+    }
+  }
+  if (!n) return toast('Aucune carte à exporter');
+  const base = slug(folderName || decks[0].name);
+  download(`${base}-anki.txt`, lines.join('\n') + '\n', 'text/plain;charset=utf-8');
+  openModal(`
+    <h2>Fichier Anki prêt</h2>
+    <p>${plural(n, 'carte')} exportée${n > 1 ? 's' : ''} dans <b>${esc(base)}-anki.txt</b> (dossier Téléchargements).</p>
+    <ol class="steps">
+      <li>Ouvre <b>Anki</b> sur ton ordinateur → <b>Fichier → Importer</b>.</li>
+      <li>Choisis le fichier <b>${esc(base)}-anki.txt</b>.</li>
+      <li>Vérifie que le type de note est <b>Basique</b>, puis clique sur <b>Importer</b>.</li>
+    </ol>
+    <p class="hint">Les paquets sont créés automatiquement${folderName ? ` sous « ${esc(folderName)} »` : ''}, avec la mise en forme et les schémas. Ta progression de révision n'est pas transférée : Anki repart de zéro. Sur téléphone, importe d'abord sur ordinateur puis synchronise avec AnkiWeb.</p>
+    <div class="row end"><button class="btn primary" data-act="close">OK</button></div>`);
 }
 
 function exportDeck(deck) {
@@ -1151,6 +1185,7 @@ function openDeckMenu() {
       <li><button class="btn" data-act="import-into">Importer des cartes dans ce paquet</button></li>
       <li><button class="btn" data-act="help">Générer des cartes avec Claude</button></li>` : ''}
       <li><button class="btn" data-act="copy-deck">Copier dans mes paquets</button></li>
+      <li><button class="btn" data-act="export-anki">Exporter pour Anki (.txt)</button></li>
       <li><button class="btn" data-act="export-deck">Exporter le paquet (.json)</button></li>
       ${edit ? '<li><button class="btn" data-act="rename-deck">Renommer / modifier la description</button></li>' : ''}
       <li><button class="btn" data-act="reset-deck">Réinitialiser ma progression</button></li>
@@ -1168,6 +1203,7 @@ async function openFolderMenu() {
     <ul class="menu-list">
       ${folderCanWrite(folder) ? `<li><button class="btn" data-act="new-deck">Nouveau paquet dans ce dossier</button></li>
       <li><button class="btn" data-act="import">Importer un paquet dans ce dossier</button></li>` : ''}
+      <li><button class="btn" data-act="export-anki-folder">Exporter tout le dossier pour Anki (.txt)</button></li>
       ${isOwner ? `<li><button class="btn" data-act="share-folder">${ICON.users} Partager avec des camarades…</button></li>
       <li><button class="btn" data-act="rename-folder">Renommer le dossier</button></li>
       <li><button class="btn danger" data-act="delete-folder">Supprimer le dossier</button></li>`
@@ -1298,6 +1334,16 @@ const actions = {
   'copy-one': el => { copyToClipboard([el.dataset.id]); closeModal(); renderCardTools(); },
   'deck-menu': openDeckMenu,
   'export-deck': () => { closeModal(); exportDeck(state.deck); },
+  async 'export-anki'() {
+    const folder = state.deck.folderId ? await getFolder(state.deck.folderId) : null;
+    ankiExport([state.deck], folder?.name);
+  },
+  async 'export-anki-folder'() {
+    const folder = await getFolder(state.folderId);
+    const decks = (await getAll()).filter(d => d.folderId === folder.id).sort(byName);
+    if (!decks.length) return toast('Ce dossier ne contient aucun paquet');
+    ankiExport(decks, folder.name);
+  },
   async 'rename-deck'() {
     const deck = state.deck;
     const name = prompt('Nom du paquet :', deck.name)?.trim();
