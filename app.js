@@ -8,15 +8,17 @@
    Carte   : { id, front, back, created, due, interval, ease, reps, lapses }
    ========================================================= */
 const APP_NAME = 'Flash’Agreg';
-const DB_NAME = 'flashcards', STORE = 'decks', FOLDERS = 'folders';
+// MEDIA : fichiers propres à l'appareil (vidéo du mode écran partagé), jamais synchronisés
+const DB_NAME = 'flashcards', STORE = 'decks', FOLDERS = 'folders', MEDIA = 'media';
 let dbPromise;
 function db() {
   return dbPromise ||= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 2);
+    const req = indexedDB.open(DB_NAME, 3);
     req.onupgradeneeded = () => {
       const d = req.result;
       if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'id' });
       if (!d.objectStoreNames.contains(FOLDERS)) d.createObjectStore(FOLDERS, { keyPath: 'id' });
+      if (!d.objectStoreNames.contains(MEDIA)) d.createObjectStore(MEDIA, { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -48,6 +50,9 @@ function putFolder(f, raw = false) {
   return tx(FOLDERS, 'readwrite', s => s.put(f));
 }
 const delFolder = id => tx(FOLDERS, 'readwrite', s => s.delete(id));
+const getMedia = key => tx(MEDIA, 'readonly', s => s.get(key));
+const putMedia = rec => tx(MEDIA, 'readwrite', s => s.put(rec));
+const delMedia = key => tx(MEDIA, 'readwrite', s => s.delete(key));
 const byName = (a, b) => a.name.localeCompare(b.name, 'fr', { numeric: true });
 
 /* =========================================================
@@ -63,6 +68,11 @@ const state = { deck: null, session: null, folderId: null };
 const svg = (d, extra = '') => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
 const ICON = {
   search: svg('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>'),
+  film: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
+  play: svg('<path d="M7 5l12 7-12 7z"/>'),
+  pause: svg('<path d="M8 5v14M16 5v14"/>'),
+  split: svg('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 13h16"/><path d="M10 15.5l4 2-4 2z"/>'),
   edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
   folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
   deck: svg('<rect x="3" y="6" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/>'),
@@ -675,6 +685,12 @@ async function renderDeck(id) {
         <span>Passe d’une carte à l’autre avec les flèches ← → ou en glissant, sans noter.</span>
         <em>${plural(deck.cards.length, 'carte')}</em>
       </a>
+      <a class="mode-card ${off}" href="#/study/${id}/video">
+        <span class="mode-icon">${ICON.split}</span>
+        <b>Mode vidéo</b>
+        <span>Écran partagé façon TikTok : les cartes en haut, une vidéo en boucle en bas. Glisse vers le haut pour la suivante.</span>
+        <em>Révision légère, sans notation</em>
+      </a>
     </div>
     <div class="options">
       <label class="switch"><input type="checkbox" data-setting="typing" ${settings.typing ? 'checked' : ''}><span>Taper ma réponse avant de retourner la carte</span></label>
@@ -895,7 +911,10 @@ async function startStudy(id, mode) {
   const deck = await getDeck(id);
   if (!deck) return go('#/');
   state.deck = deck;
-  const base = { deckId: id, mode, flipped: false, typed: '', reverse: !!settings.reverse, typing: !!settings.typing };
+  // Mode vidéo = Parcourir dans un écran partagé (sans saisie de réponse)
+  const split = mode === 'video';
+  if (split) mode = 'browse';
+  const base = { deckId: id, mode, split, flipped: false, typed: '', reverse: !!settings.reverse, typing: !split && !!settings.typing };
   if (mode === 'browse') {
     const order = deck.cards.map(c => c.id);
     state.session = { ...base, order: settings.shuffle ? shuffle(order) : order, index: 0 };
@@ -913,7 +932,7 @@ async function startStudy(id, mode) {
 // Modifier la carte affichée sans quitter la révision
 function editCurrentCard() {
   const s = state.session;
-  const card = s && currentCard(s);
+  const card = s && !s.finished && currentCard(s);
   if (!card || !state.canEdit) return;
   openEditor(card.id, {
     onDone: action => {
@@ -960,6 +979,7 @@ function currentCard(s) {
 
 function renderStudy(anim = '') {
   const s = state.session, deck = state.deck;
+  if (s.split) return renderSplit(anim);
   const pending = s.mode === 'browse' ? s.order : s.queue;
   if (!pending.length || s.finished) return renderStudyEnd();
   const card = currentCard(s);
@@ -1044,16 +1064,17 @@ function enableSwipe(el) {
 function move(delta) {
   const s = state.session;
   if (!s || s.mode !== 'browse') return;
+  if (s.finished && delta < 0) { s.finished = false; return renderStudy('slide-prev'); } // revenir de l'écran de fin
   const i = s.index + delta;
   if (i < 0) return;
-  if (i >= s.order.length) { s.finished = true; return renderStudy(); }
+  if (i >= s.order.length) { s.finished = true; return renderStudy('slide-next'); }
   Object.assign(s, { index: i, flipped: false, typed: '' });
   renderStudy(delta > 0 ? 'slide-next' : 'slide-prev');
 }
 
 function flip() {
   const s = state.session;
-  if (!s || Date.now() - (s.swipeAt || 0) < 500) return;
+  if (!s || s.finished || Date.now() - (s.swipeAt || 0) < 500) return;
   const input = $('#answer');
   if (input) s.typed = input.value;
   const el = $('#fc');
@@ -1537,6 +1558,29 @@ const actions = {
   flip,
   rate: el => rate(+el.dataset.r),
   'restart-browse': () => startStudy(state.session.deckId, 'browse'),
+  'restart-video': () => { // recommencer sans recharger la vidéo
+    const s = state.session;
+    Object.assign(s, { index: 0, finished: false, flipped: false });
+    if (settings.shuffle) shuffle(s.order);
+    renderSplit('slide-next');
+  },
+  'exit-split': () => go(`#/deck/${state.session.deckId}`),
+  'split-next': () => move(1),
+  'split-prev': () => move(-1),
+  'video-source': () => openVideoPicker(),
+  'toggle-auto': () => {
+    if (!settings.autoAdvance) settings.autoAdvance = true;
+    else {
+      // Clic suivant : vitesse suivante, puis arrêt
+      const speeds = [5, 8, 3];
+      const i = speeds.indexOf(settings.autoDelay || 5);
+      if (i === speeds.length - 1) settings.autoAdvance = false;
+      else settings.autoDelay = speeds[i + 1];
+    }
+    settings.autoDelay ||= 5;
+    saveSettings();
+    renderSplit();
+  },
   prev: () => move(-1),
   next: () => move(1),
 };
@@ -1566,6 +1610,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); flip();
   }
   else if (e.key === 'e' || e.key === 'E') { e.preventDefault(); editCurrentCard(); }
+  else if (s.split && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); move(e.key === 'ArrowDown' ? 1 : -1); }
   else if (s.mode === 'browse' && e.key === 'ArrowRight') { e.preventDefault(); move(1); }
   else if (s.mode === 'browse' && e.key === 'ArrowLeft') { e.preventDefault(); move(-1); }
   else if (s.mode === 'due' && s.flipped && /^[1-4]$/.test(e.key)) rate(+e.key - 1);
@@ -1576,13 +1621,14 @@ document.addEventListener('keydown', e => {
    ========================================================= */
 async function route() {
   closeModal();
+  teardownSplit();
   $('#lightbox').hidden = true;
   const [, view, id, mode] = (location.hash.slice(1) || '/').split('/');
   try {
     if (view === 'deck' && id) { state.session = null; return await renderDeck(id); }
     if (view === 'folder' && id) { state.session = null; return await renderFolder(id); }
     if (view === 'search') { state.session = null; return await renderSearch(); }
-    if (view === 'study' && id) return await startStudy(id, mode === 'browse' || mode === 'all' ? 'browse' : 'due');
+    if (view === 'study' && id) return await startStudy(id, mode === 'video' ? 'video' : mode === 'browse' || mode === 'all' ? 'browse' : 'due');
     state.session = null;
     await renderHome();
   } catch (e) {

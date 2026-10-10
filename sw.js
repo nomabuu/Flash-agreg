@@ -1,10 +1,10 @@
 // Service worker : rend l'appli utilisable hors connexion.
 // Après une modification des fichiers de l'appli, incrémente VERSION.
-const VERSION = 'v8';
+const VERSION = 'v9';
 const CORE = `core-${VERSION}`;
 const IMAGES = 'images-v1';
 const ASSETS = [
-  './', './index.html', './styles.css', './cloud.js', './app.js', './manifest.webmanifest',
+  './', './index.html', './styles.css', './cloud.js', './video.js', './app.js', './manifest.webmanifest',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
 ];
 
