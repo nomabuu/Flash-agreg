@@ -28,6 +28,33 @@
 <dialog id="modal"></dialog>
 <div id="lightbox" hidden><img alt=""></div>
 <div id="toast" role="status" aria-live="polite"></div>
+<script>
+// Filet de sécurité : si l'appli ne s'affiche pas au démarrage, montrer l'erreur et proposer de réparer
+// (vide les copies hors connexion de l'appli, sans toucher aux cartes enregistrées).
+(function () {
+  var errors = [];
+  window.addEventListener('error', function (e) { errors.push(e.message || String(e.error)); });
+  window.addEventListener('unhandledrejection', function (e) { var r = e.reason; errors.push((r && (r.message || r.name)) || String(r)); });
+  setTimeout(function () {
+    var app = document.getElementById('app');
+    if (!app || app.children.length) return;
+    var msg = errors.length ? 'Erreur : ' + errors.join(' · ') : 'Le chargement est bloqué.';
+    app.innerHTML = '<div class="empty"><h2>L’appli ne démarre pas</h2><p class="hint" id="fa-err"></p>'
+      + '<p>Ferme les <b>autres onglets et fenêtres</b> Flash’Agreg, puis touche <b>Réparer</b>. Tes cartes ne sont pas effacées.</p>'
+      + '<div class="row"><button class="btn primary" id="fa-repair">Réparer</button></div></div>';
+    document.getElementById('fa-err').textContent = msg;
+    document.getElementById('fa-repair').onclick = async function () {
+      try {
+        var regs = await navigator.serviceWorker.getRegistrations();
+        for (var i = 0; i < regs.length; i++) await regs[i].unregister();
+        var keys = await caches.keys();
+        for (var j = 0; j < keys.length; j++) await caches.delete(keys[j]);
+      } catch (e) { /* rien à nettoyer */ }
+      location.reload();
+    };
+  }, 6000);
+})();
+</script>
 <script src="cloud.js"></script>
 <script src="video.js"></script>
 <script src="app.js"></script>
