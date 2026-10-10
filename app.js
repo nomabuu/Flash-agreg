@@ -20,7 +20,18 @@ function db() {
       if (!d.objectStoreNames.contains(FOLDERS)) d.createObjectStore(FOLDERS, { keyPath: 'id' });
       if (!d.objectStoreNames.contains(MEDIA)) d.createObjectStore(MEDIA, { keyPath: 'key' });
     };
-    req.onsuccess = () => resolve(req.result);
+    // Mise à jour de la base bloquée par un autre onglet / une autre fenêtre ouverte avec l'ancienne version
+    req.onblocked = () => {
+      app.innerHTML = `<div class="empty"><h2>Mise à jour en attente</h2>
+        <p>Flash’Agreg est encore ouvert dans un <b>autre onglet</b> ou une <b>autre fenêtre</b> avec l’ancienne version.
+        Ferme-les : l’appli se débloquera toute seule. Tes cartes ne sont pas perdues.</p></div>`;
+    };
+    req.onsuccess = () => {
+      const d = req.result;
+      // Une version plus récente a besoin de la base : libérer la place et recharger
+      d.onversionchange = () => { d.close(); location.reload(); };
+      resolve(d);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -912,8 +923,9 @@ async function startStudy(id, mode) {
   if (!deck) return go('#/');
   state.deck = deck;
   // Mode vidéo = Parcourir dans un écran partagé (sans saisie de réponse)
-  const split = mode === 'video';
+  let split = mode === 'video';
   if (split) mode = 'browse';
+  if (split && typeof renderSplit !== 'function') { split = false; toast('Mode vidéo indisponible : recharge l’appli pour terminer la mise à jour'); }
   const base = { deckId: id, mode, split, flipped: false, typed: '', reverse: !!settings.reverse, typing: !split && !!settings.typing };
   if (mode === 'browse') {
     const order = deck.cards.map(c => c.id);
@@ -1621,7 +1633,7 @@ document.addEventListener('keydown', e => {
    ========================================================= */
 async function route() {
   closeModal();
-  teardownSplit();
+  if (typeof teardownSplit === 'function') teardownSplit(); // video.js absent si mise à jour partielle
   $('#lightbox').hidden = true;
   const [, view, id, mode] = (location.hash.slice(1) || '/').split('/');
   try {

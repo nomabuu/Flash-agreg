@@ -1,6 +1,6 @@
 // Service worker : rend l'appli utilisable hors connexion.
 // Après une modification des fichiers de l'appli, incrémente VERSION.
-const VERSION = 'v9';
+const VERSION = 'v10';
 const CORE = `core-${VERSION}`;
 const IMAGES = 'images-v1';
 const ASSETS = [
@@ -26,13 +26,17 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
 
   if (url.origin === location.origin) {
-    // Fichiers de l'appli : réponse immédiate depuis le cache, mise à jour en arrière-plan
-    const fresh = fetch(req).then(async res => {
-      if (res.ok) await (await caches.open(CORE)).put(req, res.clone());
-      return res;
-    });
+    // Fichiers de l'appli : réseau d'abord (toujours la même version pour tous les fichiers),
+    // copie locale si pas de réseau ou réseau trop lent (3 s)
+    const fresh = (req.mode === 'navigate' ? fetch(req.url, { cache: 'no-cache' }) : fetch(req, { cache: 'no-cache' }))
+      .then(async res => {
+        if (res.ok) await (await caches.open(CORE)).put(req, res.clone());
+        return res;
+      });
     e.waitUntil(fresh.catch(() => {}));
     e.respondWith((async () => {
+      const res = await Promise.race([fresh.catch(() => null), new Promise(r => setTimeout(r, 3000, null))]);
+      if (res) return res;
       const cache = await caches.open(CORE);
       const cached = await cache.match(req, { ignoreSearch: true })
         || (req.mode === 'navigate' ? await cache.match('./index.html') : undefined);
